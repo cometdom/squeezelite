@@ -47,9 +47,10 @@ static int bytes_per_frame;
 
 // ================================================================
 // In-band format header for squeeze2diretta v2.0
-// Written to stdout at each track boundary before audio data.
-// The wrapper reads this 16-byte header to detect format changes
-// synchronously, eliminating the stderr log parsing race condition.
+// Written to stdout only when the audio format changes (or for
+// the first track). Same-format gapless tracks flow without any
+// header, ensuring uninterrupted audio. The wrapper reads this
+// 16-byte header synchronously, eliminating the stderr race.
 // ================================================================
 struct __attribute__((packed)) sq_format_header {
 	u8_t  magic[4];       // "SQFH" (0x53, 0x51, 0x46, 0x48)
@@ -147,6 +148,11 @@ static void *output_thread(void *vargp) {
 	bool first_track_seen = false;
 	bool header_emitted = false;
 
+	// Track last emitted format for gapless: skip header when format unchanged
+	u32_t last_sample_rate = 0;
+	u8_t  last_bit_depth = 0;
+	u8_t  last_dsd_format = 0;
+
 	LOCK;
 
 	switch (output.format) {
@@ -182,9 +188,21 @@ static void *output_thread(void *vargp) {
 		struct sq_format_header hdr;
 
 		if (output.track_started && !header_emitted) {
-			first_track_seen = true;
 			build_format_header(&hdr);
-			header_pending = true;
+
+			// Only emit header if format changed (or first track).
+			// Same-format gapless tracks flow without interruption.
+			if (!first_track_seen ||
+				hdr.sample_rate != last_sample_rate ||
+				hdr.bit_depth != last_bit_depth ||
+				hdr.dsd_format != last_dsd_format) {
+				header_pending = true;
+				last_sample_rate = hdr.sample_rate;
+				last_bit_depth = hdr.bit_depth;
+				last_dsd_format = hdr.dsd_format;
+			}
+
+			first_track_seen = true;
 			header_emitted = true;
 		}
 		if (!output.track_started) {
